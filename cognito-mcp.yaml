@@ -1,0 +1,78 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Minimal Cognito for Runbooks MCP server auth (M5). A user pool + a resource
+  server exposing one scope (runbooks-mcp/invoke) + a machine-to-machine app
+  client using the client_credentials flow. No IAM, no Lambda — just the OAuth
+  issuer the MCP server will verify tokens against.
+
+Resources:
+
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: runbooks-mcp-pool
+      MfaConfiguration: "OFF"
+
+  # Defines the audience/scope namespace. Scope string = "<identifier>/<scope>".
+  ResourceServer:
+    Type: AWS::Cognito::UserPoolResourceServer
+    Properties:
+      UserPoolId: !Ref UserPool
+      Identifier: runbooks-mcp
+      Name: Runbooks MCP Resource Server
+      Scopes:
+        - ScopeName: invoke
+          ScopeDescription: Permission to call the Runbooks MCP server
+
+  # Machine-to-machine client: client_credentials grant, carrying the scope above.
+  M2MClient:
+    Type: AWS::Cognito::UserPoolClient
+    DependsOn: ResourceServer
+    Properties:
+      ClientName: runbooks-mcp-m2m
+      UserPoolId: !Ref UserPool
+      GenerateSecret: true
+      AllowedOAuthFlows:
+        - client_credentials
+      AllowedOAuthScopes:
+        - runbooks-mcp/invoke
+      AllowedOAuthFlowsUserPoolClient: true
+      SupportedIdentityProviders:
+        - COGNITO
+      ExplicitAuthFlows:
+        - ALLOW_REFRESH_TOKEN_AUTH
+      AccessTokenValidity: 60
+      TokenValidityUnits:
+        AccessToken: minutes
+
+  # Hosted domain → gives us the /oauth2/token endpoint. Prefix must be globally
+  # unique, so it's derived from the stack id.
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      UserPoolId: !Ref UserPool
+      Domain: !Sub
+        - "runbooks-mcp-${suffix}"
+        - suffix: !Select [0, !Split ["-", !Select [2, !Split ["/", !Ref "AWS::StackId"]]]]
+
+Outputs:
+  PoolId:
+    Description: Cognito User Pool ID
+    Value: !Ref UserPool
+  ClientId:
+    Description: M2M app client ID (the client_id)
+    Value: !Ref M2MClient
+  Scope:
+    Description: The scope the MCP server will require
+    Value: runbooks-mcp/invoke
+  IssuerUrl:
+    Description: Token issuer — the MCP verifier checks this (iss claim)
+    Value: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}"
+  JwksUrl:
+    Description: Public keys the verifier uses to check the JWT signature
+    Value: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}/.well-known/jwks.json"
+  TokenUrl:
+    Description: client_credentials token endpoint
+    Value: !Sub
+      - "https://runbooks-mcp-${suffix}.auth.${AWS::Region}.amazoncognito.com/oauth2/token"
+      - suffix: !Select [0, !Split ["-", !Select [2, !Split ["/", !Ref "AWS::StackId"]]]]
